@@ -29,21 +29,24 @@ Windows: Open Vitis and create a New Project and import **streamMul.cpp** and **
 
 .. code-block :: c++
 
-	#include "ap_axi_sdata.h"
-	#include "hls_stream.h"
+#include "ap_axi_sdata.h"
+#include "hls_stream.h"
 
-	typedef ap_axiu<32, 0, 0, 0> trans_pkt;
+typedef ap_axiu<32, 0, 0, 0> trans_pkt;
 
-	void smul(hls::stream< trans_pkt > &INPUT, hls::stream< trans_pkt > &OUTPUT)
-	{
-		#pragma HLS INTERFACE axis port=INPUT
-		#pragma HLS INTERFACE axis port=OUTPUT
-		trans_pkt data_p;
+void smul(hls::stream< trans_pkt > &INPUT, hls::stream< trans_pkt > &OUTPUT)
+{
+#pragma HLS INTERFACE s_axilite port = return bundle = CTRL
 
-		INPUT.read(data_p);
-		data_p.data *= 2;
-		OUTPUT.write(data_p);
-	}
+#pragma HLS INTERFACE axis port=INPUT
+#pragma HLS INTERFACE axis port=OUTPUT
+        trans_pkt data_p;
+
+        INPUT.read(data_p);
+        data_p.data *= 2;
+        OUTPUT.write(data_p);
+}
+
 
 In this lab, since we are using an ap_axiu struct for out I/O variables, the `last` bit is handled for us. We must interact with them this way because we are dealing with an AXI stream, not an array.
 
@@ -159,9 +162,10 @@ At this point your design should look like this:
 
 After bitstream generating process is done, open **Address Editor** from **window** menu.
 
-Note that **smul address** is **0x43C00000**, we need this address in our host program for sending **length** data.
+Note that **smul address** is **0x40000000**, we need this address in our host program for sending **length** data.
 
-.. image :: https://bitbucket.org/repo/x8q9Ed8/images/3507230747-pynq17.png
+#TODO: Need to update the image. 
+.. image :: https://github.com/KastnerRG/pp4fpgas/raw/master/labs/images/dma8.png
 
 In sources, expand **design_1_wrapper::design_1::design_1::streamMul::smul::design_1_smul_0_0::inst : smul**, double click on **smul_CTRL_s_axi_U**, and note the address for **length_r** is **0x10**. We need this address in our host program.
 
@@ -169,7 +173,7 @@ In sources, expand **design_1_wrapper::design_1::design_1::streamMul::smul::desi
 
 Copy your **project directory > project_1 > project_1.runs > impl_1 > design_1_wrapper** to your **project directory > project_1** and rename it to **smul.bit.** 
 
-Copy your **project directory > project_1 > project_1.srcs > sources_1 > bd > design_1 > hw_handoff > design_1.hwh** to your **project directory > project_1** and rename it to **smul.hwh**.
+Copy your **project directory > project_1 > project_1.gen > sources_1 > bd > design_1 > hw_handoff > design_1.hwh** to your **project directory > project_1** and rename it to **smul.hwh**.
 
 You should have both **smul.bit** and **smul.hwh**.
 
@@ -195,37 +199,56 @@ Create a new Jupyter notebook and run the following code to test your design:
 	import time
 	from pynq import Overlay
 	import pynq.lib.dma
-	from pynq import Xlnk
 	import numpy as np
 	from pynq import MMIO
 	import random
 
-	ol = Overlay('/home/xilinx/jupyter_notebooks/smul/smul.bit') # check your path
+	ol = Overlay('./design_1.bit') # check your path
 	ol.download() # it downloads your bit to FPGA
-	dma = ol.streamMul.smul_dma # creating a dma instance. Note that we packed smul and smul_dma into streamMul
-	sadd_ip = MMIO(0x43c00000, 0x10000) # we got this IP from Address Editor
-	xlnk = Xlnk()
+	print("FPGA is programmed")
+
+
+	# Getting HLS IP register map  
+	hls_ip = ol.smul
+	print(hls_ip)
+	hls_ip.register_map
+
+
+	dma = ol.smul_dma
+	dma_send = ol.smul_dma.sendchannel
+	dma_recv = ol.smul_dma.recvchannel
 
 .. code-block :: python3
 
-	length = 11
+	print("Starting HLS IP")
+	hls_ip.register_map
+	CONTROL_REGISTER = 0x0
+	hls_ip.write(CONTROL_REGISTER, 0x81) # 0x81 will set bit 0
+	hls_ip.register_map
+	
+	from pynq import allocate
+	import numpy as np
+	data_size = 20
+	input_buffer = allocate(shape=(data_size,), dtype=np.uint32)
+	print("Sending data!")
+	
+	# Prepare input data 
+	for i in range(data_size):
+		input_buffer[i] = i+5
 
-	in_buffer = xlnk.cma_array(shape=(length,), dtype=np.int32) # input buffer
-	out_buffer = xlnk.cma_array(shape=(length,), dtype=np.int32) # output buffer
+	print("Starting DMA transfer")
+	dma_send.transfer(input_buffer)
 
-	samples = random.sample(range(0, length), length)
-	np.copyto(in_buffer, samples) # copy samples to inout buffer
 
-	sadd_ip.write(0x10, length) # we got this address from Vivado source
-	t_start = time.time()
-	dma.sendchannel.transfer(in_buffer)
-	dma.recvchannel.transfer(out_buffer)
-	dma.sendchannel.wait() # wait for send channel
-	dma.recvchannel.wait() # wait for recv channel
-	t_stop = time.time()
-	in_buffer.close()
-	out_buffer.close()
-	print('Hardware execution time: ', t_stop-t_start)
-	for i in range(0, length):
-	    print('{}*2 = {}'.format(in_buffer[i], out_buffer[i]))
+	# Transfer the data and receive the data back 
+	output_buffer = allocate(shape=(data_size,), dtype=np.uint32)
+	dma_recv.transfer(output_buffer)
+
+	# Print the received data 
+	for i in range(data_size):
+		#print('0x' + format(output_buffer[i], '02x'))
+		print(i, input_buffer[i], output_buffer[i])
+
+    
+print("Finished!!!")
 
